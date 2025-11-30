@@ -89,30 +89,42 @@ def read_root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    buffer_frames = [] # Buffer único por usuario conectado
+    buffer_frames = [] 
+    
+    print("Cliente conectado al Socket") # Log de depuración
     
     try:
         while True:
-            # Recibir imagen en base64 del frontend
+            # Recibir imagen
             data = await websocket.receive_text()
             
-            # Decodificar Base64 a Imagen
-            if "data:image" in data:
-                data = data.split(",")[1]
-            image_bytes = base64.xb64decode(data)
-            image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            # --- CORRECCIÓN AQUÍ ---
+            try:
+                if "data:image" in data:
+                    data = data.split(",")[1]
+                
+                # AQUI ESTABA EL ERROR (b64decode, no xb64decode)
+                image_bytes = base64.b64decode(data) 
+                
+                image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            except Exception as img_err:
+                print(f"Error procesando imagen: {img_err}")
+                continue # Si falla una imagen, saltamos a la siguiente sin cerrar
             
             # Preprocesar
             tensor_img = transform(image)
-            
-            # Lógica de Buffer (Ventana Deslizante)
             buffer_frames.append(tensor_img)
+            
             if len(buffer_frames) > SEQ_LENGTH:
                 buffer_frames.pop(0)
             
+            # Log ligero para saber que está vivo (cada 5 frames)
+            if len(buffer_frames) % 5 == 0:
+                print(f"Buffer: {len(buffer_frames)}/{SEQ_LENGTH}")
+
             response = {"status": "buffering", "progress": len(buffer_frames)}
             
-            # Si tenemos suficientes frames, PREDDECIR
+            # PREDDECIR
             if len(buffer_frames) == SEQ_LENGTH:
                 input_sequence = torch.stack(buffer_frames).unsqueeze(0).to(device)
                 
@@ -126,6 +138,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     label = CLASES.get(idx, f"Clase {idx}")
                     
+                    print(f"Predicción: {label} ({conf:.1f}%)") # Log en Render
+                    
                     response = {
                         "status": "prediction",
                         "label": label,
@@ -133,10 +147,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "class_id": idx
                     }
             
-            # Enviar respuesta al frontend
             await websocket.send_json(response)
             
     except WebSocketDisconnect:
-        print("Cliente desconectado")
+        print("Cliente se desconectó")
     except Exception as e:
-        print(f"Error en WS: {e}")
+        print(f"ERROR FATAL EN WS: {e}")
